@@ -17,19 +17,14 @@ try:
 except:
     print('wandb is not installed.')
 
-from configs.base_e2e import cfg
+from configs.base import cfg
 from metrics.ap import event_detection_ap, tolerances
-from models.unet import ShallowImageUNetLNMixup as Net
+from models.cnn_3d import ShallowImageUNetLNMixup as Net
 from utils.debugger import set_debugger
 from utils.common import set_seed, create_checkpoint, resume_checkpoint, batch_to_device,  nms, log_results
 from utils.ema import ModelEmaV2
 from datasets.e2e import get_train_dataloader, get_full_val_dataloader, get_video_dataloader, torch_pad_if_needed
-try:
-    from torchvideotransforms import video_transforms
-except:
-    video_transforms = None
-    print('torchvideotransforms is not installed.')
-
+from datasets import video_transforms
 
 EVENT_CLASSES = [
     'challenge',
@@ -98,8 +93,8 @@ cfg.model.reg_weight = 0.2
 cfg.model.cls_loss_type = 'cb_focal'
 cfg.model.norm_type = 'ln'
 cfg.model.duration = 32
-# cfg.model.pretrained_path = '/content/drive/MyDrive/kaggle/dfl/output/stage3_ball022_b2_aug_clip_no_warmup_0918_sn/best_fold0.pth'
-cfg.model.resume_exp = 'stage3_ball022_b2_aug_clip_no_warmup_0918_sn'
+# cfg.model.pretrained_path = '/content/drive/MyDrive/kaggle/dfl/output/pretrain_b2/best_fold0.pth'
+cfg.model.resume_exp = 'pretrain_b2'
 cfg.model.alpha = 0.25
 cfg.model.beta = 0.9999
 cfg.model.temporal_shift = True

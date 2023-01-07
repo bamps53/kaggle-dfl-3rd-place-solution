@@ -18,11 +18,12 @@ except:
     print('wandb is not installed.')
 
 from configs.base import cfg
+from metrics.ap import event_detection_ap, tolerances
 from models.cnn_3d import ImageUNetLNMixup as Net
 from utils.debugger import set_debugger
 from utils.common import set_seed, create_checkpoint, resume_checkpoint, batch_to_device,  nms, log_results
 from utils.ema import ModelEmaV2
-from datasets.e2e import get_trainval_dataloader
+from datasets.e2e import get_train_dataloader, get_full_val_dataloader, get_video_dataloader, torch_pad_if_needed
 from datasets import video_transforms
 
 EVENT_CLASSES = [
@@ -32,21 +33,20 @@ EVENT_CLASSES = [
 ]
 FPS = 25.0
 HEIGHT, WIDTH = 360, 640
-DURATION = 64
 
 cfg = deepcopy(cfg)
 cfg.project = 'kaggle-dfl-pt'
-cfg.exp_name = 'final_all_mix_360_b2_dur64_noreg_nomask'
+cfg.exp_name = 'stage0_229_b3_d32_mixup_360_dwc_no_mask_no_reg_ft128'
 cfg.output_dir = f'output/{cfg.exp_name}'
 cfg.debug = False
 
 cfg.train.df_path = '../input/folds.csv'
 cfg.train.video_feature_dir = '../input/train_frames'
 cfg.train.label_dir = '../input/event_labels'
-cfg.train.duration = DURATION
+cfg.train.duration = 128
 cfg.train.offset = 5
-cfg.train.batch_size = 4
-cfg.train.num_workers = 8 if not cfg.debug else 0
+cfg.train.batch_size = 2
+cfg.train.num_workers = 4 if not cfg.debug else 0
 cfg.train.image_size = (HEIGHT, WIDTH)
 cfg.train.bg_sampling_rate = 0.5
 cfg.train.transforms = video_transforms.Compose([
@@ -61,9 +61,9 @@ cfg.valid.df_path = '../input/folds.csv'
 cfg.valid.all_df_path = '../input/folds_all.csv'
 cfg.valid.video_feature_dir = '../input/train_frames'
 cfg.valid.label_dir = '../input/event_labels'
-cfg.valid.duration = DURATION
+cfg.valid.duration = 128
 cfg.valid.offset = 5
-cfg.valid.batch_size = 4
+cfg.valid.batch_size = 2
 cfg.valid.num_workers = 4 if not cfg.debug else 0
 cfg.valid.image_size = (HEIGHT, WIDTH)
 
@@ -73,9 +73,9 @@ cfg.valid.image_size = (HEIGHT, WIDTH)
 cfg.test.video_paths = [
     '../input/dfl-bundesliga-data-shootout/train/9a97dae4_1.mp4',
     '../input/dfl-bundesliga-data-shootout/train/ecf251d4_0.mp4']
-cfg.test.duration = DURATION
+cfg.test.duration = 128
 cfg.test.offset = 5
-cfg.test.batch_size = DURATION
+cfg.test.batch_size = 128
 cfg.test.num_workers = 0
 cfg.test.score_th = 0.01
 cfg.test.nms_thresholds = [12, 6, 6]
@@ -84,37 +84,39 @@ cfg.test.weight_paths = [
     '../input/stage0-032-fold0/best_fold0.pth']
 cfg.test.image_size = (HEIGHT, WIDTH)
 
-cfg.model.model_name = 'tf_efficientnet_b2_ns'
-cfg.model.in_channels = 1408
+cfg.model.model_name = 'tf_efficientnet_b3_ns'
+cfg.model.in_channels = 1536
 cfg.model.num_classes = 3
 cfg.model.cls_weight = 1.0
 cfg.model.reg_weight = 0.0
-cfg.model.cls_loss_type = 'no_mask_cb_focal'
+cfg.model.cls_loss_type = 'cb_focal'
 cfg.model.norm_type = 'ln'
-cfg.model.duration = DURATION
-cfg.model.pretrained_path = './output/pretrain_b2/best_fold0.pth'
-# cfg.model.resume_exp = 'pretrain_b2'
+cfg.model.duration = 128
+# cfg.model.pretrained_path = './output/stage3_ball024_b3_aug_clip_no_warmup_0918_sn_360/last_fold0.pth'
+cfg.model.resume_exp = 'stage0_229_b3_d32_mixup_360_dwc_no_mask_no_reg'
 cfg.model.alpha = 0.25
 cfg.model.beta = 0.9999
 cfg.model.temporal_shift = True
+cfg.model.temporal_shift_dwc = True
 cfg.model.drop = 0.3
 cfg.model.drop_path = 0.2
 cfg.model.drop_block = 0.0
 cfg.model.grad_checkpointing = True
-cfg.model.mix_beta = 0.5
+cfg.model.mix_beta = 0.0
 cfg.model.manifold_mixup = True
-
+cfg.model.freeze_backbone = True
+cfg.model.rescale_layer_norm = True
 # others
 cfg.seed = 42
 cfg.device = 'cuda'
-cfg.lr = 1.0e-3
+cfg.lr = 1.0e-4
 cfg.wd = 1.0e-3
 cfg.min_lr = 5.0e-5
 cfg.warmup_lr = 1.0e-5
 cfg.warmup_epochs = 3
 cfg.warmup = 1
-cfg.epochs = 50
-cfg.eval_intervals = 5
+cfg.epochs = 30
+cfg.eval_intervals = 1
 cfg.mixed_precision = True
 cfg.ema_start_epoch = 1
 
@@ -252,7 +254,7 @@ def train(cfg, fold):
     wandb.init(project=cfg.project,
                name=f'{cfg.exp_name}_fold{fold}', config=cfg, reinit=True, mode=mode)
     set_seed(cfg.seed)
-    train_dataloader = get_trainval_dataloader(cfg.train, fold)
+    train_dataloader = get_train_dataloader(cfg.train, fold)
     cfg.model.samples_per_class = train_dataloader.dataset.samples_per_class
     model = get_model(cfg)
 
@@ -292,6 +294,10 @@ def train(cfg, fold):
 
     optimizer.zero_grad()
     for epoch in range(init_epoch, cfg.epochs):
+        if (epoch >= cfg.ema_start_epoch) and (model_ema is None):
+            print('initialize EMA model.')
+            model_ema = ModelEmaV2(model, decay=0.999)
+
         set_seed(cfg.seed + epoch)
 
         cfg.curr_epoch = epoch
@@ -356,6 +362,13 @@ def train(cfg, fold):
         score = average_precision_score(
             targets == 1, cls_preds, sample_weight=masks)
 
+        if (epoch % cfg.eval_intervals == 0) or (epoch > 30):
+            if model_ema is not None:
+                val_results = run_full_eval(cfg, fold, model_ema.module)
+            else:
+                val_results = run_full_eval(cfg, fold, model)
+        else:
+            val_results = {}
         lr = optimizer.param_groups[0]['lr']
 
         all_results = {
@@ -367,19 +380,118 @@ def train(cfg, fold):
             'reg_loss': avg_reg_loss,
             'score': score,
         }
-        val_results = {}
         log_results(all_results, train_results, val_results)
 
-        if epoch % 5 == 0:
+        val_score = val_results.get('score', 0.0)
+        if best_val_score < val_score:
+            best_val_score = val_score
             checkpoint = create_checkpoint(
                 model, optimizer, epoch, scheduler=scheduler, scaler=scaler, score=best_val_score,
                 model_ema=model_ema
             )
-            torch.save(checkpoint, f"{cfg.output_dir}/epoch{epoch:02}.pth")
+            torch.save(checkpoint, f"{cfg.output_dir}/best_fold{fold}.pth")
 
         checkpoint = create_checkpoint(
             model, optimizer, epoch, scheduler=scheduler, scaler=scaler, model_ema=model_ema)
         torch.save(checkpoint, f"{cfg.output_dir}/last_fold{fold}.pth")
+
+
+def run_full_eval(cfg, fold, model=None, test_dataloader=None):
+
+    if model is None:
+        model = get_model(cfg)
+        weight_path = f"{cfg.output_dir}/best_fold{fold}.pth"
+        model.load_state_dict(torch.load(weight_path)['model'])
+        print('load model from', weight_path)
+    model.eval()
+    torch.set_grad_enabled(False)
+
+    if test_dataloader is None:
+        test_dataloader = get_full_val_dataloader(cfg.valid, fold)
+
+    cls_preds = []
+    reg_preds = []
+    keys = []
+
+    for i, inputs in enumerate(tqdm(test_dataloader)):
+        inputs = batch_to_device(inputs, cfg.device)
+
+        with autocast(cfg.mixed_precision):
+            outputs = model(inputs)
+
+        cls_preds.append(outputs['cls'].sigmoid().cpu().numpy())
+        reg_preds.append(outputs['reg'].cpu().numpy())
+        keys.append(inputs['keys'])
+
+    cls_preds = np.concatenate(cls_preds, axis=0)
+    reg_preds = np.concatenate(reg_preds, axis=0)
+    keys = np.concatenate(keys, axis=0)
+
+    epoch = cfg.curr_epoch
+    np.save(
+        f"{cfg.output_dir}/val_cls_preds_fold{cfg.fold}_epoch{epoch}.npy", cls_preds)
+    np.save(
+        f"{cfg.output_dir}/val_reg_preds_fold{cfg.fold}_epoch{epoch}.npy", reg_preds)
+    np.save(f"{cfg.output_dir}/val_keys_fold{cfg.fold}.npy", keys)
+
+    result_df = post_process(
+        keys, cls_preds, reg_preds, score_threshold=cfg.test.score_th, nms_thresholds=cfg.test.nms_thresholds)
+    result_df.to_csv(
+        f"{cfg.output_dir}/val_results_df_fold{fold}.csv", index=False)
+
+    df = test_dataloader.dataset.all_df
+    val_score, score_per_events = event_detection_ap(
+        df, result_df, tolerances)
+
+    results = {'score': val_score}
+    results.update({"score_"+k: v for k, v in score_per_events.items()})
+    return results
+
+
+def inference(cfg):
+    torch.set_grad_enabled(False)
+
+    cfg.model.pretrained = False
+    models = [get_model(cfg, weight_path) for weight_path in cfg.weight_paths]
+    [m.eval() for m in models]
+
+    cls_preds = []
+    reg_preds = []
+    keys = []
+
+    for video_path in cfg.test.video_paths:
+        test_dataloader = get_video_dataloader(cfg.test, video_path)
+        for i, images in enumerate(tqdm(test_dataloader)):
+            video_name = os.path.basename(video_path).split('.')[0]
+            images = images.to(cfg.device)
+            images = torch_pad_if_needed(images, cfg.test.duration)
+            images = images[None]
+            outputs = []
+
+            FLIP_TEST = True
+            for model in models:
+                outputs.append(model({'features': images}))
+            if FLIP_TEST:
+                flipped_images = torch.flip(images, [-1])
+                for model in models:
+                    outputs.append(model({'features': flipped_images}))
+
+            cls_pred = torch.stack([o['cls']
+                                   for o in outputs], dim=0).mean(dim=0)
+            reg_pred = torch.stack([o['reg']
+                                   for o in outputs], dim=0).mean(dim=0)
+
+            cls_preds.append(cls_pred.sigmoid().cpu().numpy())
+            reg_preds.append(reg_pred.cpu().numpy())
+            keys.append(f"{video_name}_{i:06}")
+
+    cls_preds = np.concatenate(cls_preds, axis=0)
+    reg_preds = np.concatenate(reg_preds, axis=0)
+
+    result_df = post_process(
+        keys, cls_preds, reg_preds, score_threshold=cfg.test.score_th, nms_thresholds=cfg.test.nms_thresholds)
+    result_df.to_csv('submission.csv', index=False)
+    return result_df
 
 
 def parse_args():
@@ -420,6 +532,11 @@ if __name__ == "__main__":
     args = parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device_id)
-    fold = -1
-    cfg = update_cfg(cfg, args, fold)
-    train(cfg, fold)
+    for fold in range(args.start_fold, args.end_fold):
+        cfg = update_cfg(cfg, args, fold)
+        if args.validate:
+            run_full_eval(cfg, fold)
+        elif args.infer:
+            inference(cfg)
+        else:
+            train(cfg, fold)

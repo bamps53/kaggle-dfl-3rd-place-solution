@@ -8,14 +8,14 @@ FPS = 25.0
 HEIGHT, WIDTH = 288, 512
 
 cfg = deepcopy(cfg)
-cfg.exp_name = 'pretrain_b2'
+cfg.exp_name = 'pretrain_b4'
 cfg.output_dir = f'output/{cfg.exp_name}'
 cfg.debug = False
 
 cfg.train.df_path = '../input/SoccerNet/tracking/folds_resized288.csv'
 cfg.train.data_dir = '../input/SoccerNet/tracking'
 cfg.train.folder_name = 'img_resized288'
-
+cfg.train.batch_size = 2
 cfg.train.image_size = (HEIGHT, WIDTH)
 cfg.train.transforms = video_transforms.Compose([
     video_transforms.RandomHorizontalFlip(),
@@ -31,9 +31,10 @@ cfg.valid.data_dir = '../input/SoccerNet/tracking288'
 cfg.valid.folder_name = 'img_resized288'
 cfg.valid.image_size = (HEIGHT, WIDTH)
 cfg.valid.original_image_size = (288, 512)
+cfg.valid.batch_size = 2
 
-cfg.model.model_name = 'tf_efficientnet_b2_ns'
-cfg.model.in_channels = 1408
+cfg.model.model_name = 'tf_efficientnet_b4_ns'
+cfg.model.in_channels = 1792
 cfg.model.cls_loss_type = 'centernet'
 cfg.model.temporal_shift = True
 cfg.model.temporal_shift_dwc = False

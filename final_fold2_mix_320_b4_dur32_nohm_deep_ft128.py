@@ -17,19 +17,14 @@ try:
 except:
     print('wandb is not installed.')
 
-from configs.base_e2e import cfg
+from configs.base import cfg
 from metrics.ap import event_detection_ap, tolerances
-from models.unet import ImageUNetLNMixup as Net
+from models.cnn_3d import ImageUNetLNMixup as Net
 from utils.debugger import set_debugger
 from utils.common import set_seed, create_checkpoint, resume_checkpoint, batch_to_device,  nms, log_results
 from utils.ema import ModelEmaV2
 from datasets.e2e import get_train_dataloader, get_full_val_dataloader, get_video_dataloader, torch_pad_if_needed
-try:
-    from torchvideotransforms import video_transforms
-except:
-    video_transforms = None
-    print('torchvideotransforms is not installed.')
-
+from datasets import video_transforms
 
 EVENT_CLASSES = [
     'challenge',
@@ -38,7 +33,7 @@ EVENT_CLASSES = [
 ]
 FPS = 25.0
 HEIGHT, WIDTH = 360, 640
-DURATION=128
+DURATION = 128
 cfg = deepcopy(cfg)
 cfg.project = 'kaggle-dfl-pt'
 cfg.exp_name = 'final_fold2_mix_320_b4_dur32_nohm_deep_ft128'
@@ -98,7 +93,7 @@ cfg.model.cls_loss_type = 'cb_focal'
 cfg.model.norm_type = 'ln'
 cfg.model.duration = DURATION
 cfg.model.pretrained_path = './output/final_fold2_mix_320_b4_dur32_nohm_deep/best_fold2.pth'
-# cfg.model.resume_exp = 'stage3_ball023_b4_aug_clip_no_warmup_0918_sn'
+# cfg.model.resume_exp = 'pretrain_b4'
 cfg.model.alpha = 0.25
 cfg.model.beta = 0.9999
 cfg.model.temporal_shift = True

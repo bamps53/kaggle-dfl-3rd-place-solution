@@ -17,19 +17,14 @@ try:
 except:
     print('wandb is not installed.')
 
-from configs.base_e2e import cfg
+from configs.base import cfg
 from metrics.ap import event_detection_ap, tolerances
-from models.unet import ShallowImageUNetLNMixup as Net
+from models.cnn_3d import ShallowImageUNetLNMixup as Net
 from utils.debugger import set_debugger
 from utils.common import set_seed, create_checkpoint, resume_checkpoint, batch_to_device,  nms, log_results
 from utils.ema import ModelEmaV2
 from datasets.e2e import get_train_dataloader, get_full_val_dataloader, get_video_dataloader, torch_pad_if_needed
-try:
-    from torchvideotransforms import video_transforms
-except:
-    video_transforms = None
-    print('torchvideotransforms is not installed.')
-
+from datasets import video_transforms
 
 EVENT_CLASSES = [
     'challenge',
@@ -98,7 +93,7 @@ cfg.model.reg_weight = 0.2
 cfg.model.cls_loss_type = 'cb_focal'
 cfg.model.norm_type = 'ln'
 cfg.model.duration = DURATION
-# cfg.model.pretrained_path = '/content/drive/MyDrive/kaggle/dfl/output/stage3_ball022_b2_aug_clip_no_warmup_0918_sn/best_fold0.pth'
+# cfg.model.pretrained_path = '/content/drive/MyDrive/kaggle/dfl/output/pretrain_b2/best_fold0.pth'
 cfg.model.resume_exp = 'stage0_210_b2_d32_mixup_reg_lr_tune_from_ball022_ema_360_640_fixed_deep'
 cfg.model.alpha = 0.25
 cfg.model.beta = 0.9999
@@ -155,9 +150,9 @@ def get_model(cfg, weight_path=None):
         if cfg.model.rescale_layer_norm:
             state_dict[model_key] = rescale_layer_norm(
                 model, state_dict[model_key])
-        
+
         model.load_state_dict(state_dict[model_key])
-        
+
     return model.to(cfg.device)
 
 
@@ -262,10 +257,9 @@ def train(cfg, fold):
     train_dataloader = get_train_dataloader(cfg.train, fold)
     cfg.model.samples_per_class = train_dataloader.dataset.samples_per_class
     model = get_model(cfg)
-    
+
     if cfg.model.grad_checkpointing:
         model.set_grad_checkpointing(enable=True)
-    
 
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = ModelEmaV2(model, decay=0.999)
@@ -517,25 +511,26 @@ def update_cfg(cfg, args, fold):
     if args.debug:
         cfg.debug = True
         set_debugger()
-        
+
     cfg.fold = fold
-    
+
     if args.resume:
         cfg.resume = True
-    
+
     cfg.root = args.root
-    
+
     cfg.output_dir = os.path.join(args.root, cfg.output_dir)
-        
+
     if cfg.model.resume_exp is not None:
         cfg.model.pretrained_path = os.path.join(
             cfg.root, 'output', cfg.model.resume_exp, f'best_fold{cfg.fold}.pth')
-    
+
     return cfg
-    
+
+
 if __name__ == "__main__":
     args = parse_args()
-    
+
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device_id)
     for fold in range(args.start_fold, args.end_fold):
         cfg = update_cfg(cfg, args, fold)

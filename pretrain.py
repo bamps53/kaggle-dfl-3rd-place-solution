@@ -1,12 +1,9 @@
 import argparse
 import gc
 import os
-from collections import defaultdict
 import importlib
 
-import cv2
 import numpy as np
-import pandas as pd
 import torch
 from timm.scheduler import CosineLRScheduler
 from torch.cuda.amp import GradScaler, autocast
@@ -18,9 +15,8 @@ try:
 except:
     print('wandb is not installed.')
 
-from datasets.common import denormalize_img, to_numpy, torch_pad_if_needed
-from datasets.segm import get_train_dataloader, get_val_dataloader, get_image_dataloader
-from models.unet import GCBallNet as Net
+from datasets.segm import get_train_dataloader, get_val_dataloader
+from models.ball_net import BallNet as Net
 from utils.common import (batch_to_device, create_checkpoint, log_results,
                           resume_checkpoint, set_seed)
 from utils.debugger import set_debugger
@@ -32,9 +28,6 @@ from optimizers.common import get_optimizer
 
 def get_model(cfg, weight_path=None):
     model = Net(cfg.model)
-    if cfg.model.resume_exp is not None:
-        weight_path = os.path.join(
-            cfg.root, 'output', cfg.model.resume_exp, f'best_fold{cfg.fold}.pth')
     if weight_path is not None:
         state_dict = torch.load(weight_path, map_location='cpu')
         epoch = state_dict['epoch']
@@ -65,7 +58,6 @@ def calc_score(y_pred, y_true):
     correct = (y_pred == y_true).all(1)
     dist = ((y_pred - y_true)**2).sum(dim=1)**0.5
     return correct, dist
-
 
 
 def train(cfg, fold):
@@ -250,22 +242,24 @@ def run_full_eval(cfg, fold, model=None, test_dataloader=None):
     results = {'score': val_score, 'loss': val_loss, 'dist': val_dist}
     return results
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_path", "-c", type=str)
     parser.add_argument("--root", default="./", type=str)
     parser.add_argument("--device_id", "-d", default="0", type=str)
     parser.add_argument("--start_fold", "-s", default=0, type=int)
-    parser.add_argument("--end_fold", "-e", default=5, type=int)
+    parser.add_argument("--end_fold", "-e", default=1, type=int)
     parser.add_argument("--validate", "-v", action="store_true")
     parser.add_argument("--infer", "-i", action="store_true")
     parser.add_argument("--debug", "-db", action="store_true")
     parser.add_argument("--resume", "-r", action="store_true")
     return parser.parse_args()
 
+
 def setup_cfg(args):
     cfg = importlib.import_module(args.config_path).cfg
-    
+
     if args.debug:
         cfg.debug = True
         set_debugger()
@@ -273,15 +267,16 @@ def setup_cfg(args):
         cfg.resume = True
     cfg.root = args.root
     cfg.output_dir = os.path.join(args.root, cfg.output_dir)
-    
+
     return cfg
-    
+
+
 if __name__ == "__main__":
     args = parse_args()
-    
+
     cfg = setup_cfg(args)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.device_id)
-    
+
     for fold in range(args.start_fold, args.end_fold):
         train(cfg, fold)
